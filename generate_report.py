@@ -1,22 +1,29 @@
 import argparse
 import os
+import re
+import glob
 import pandas as pd
 
-def generate_report(input_file: str, output_csv: str):
-    """
-    入力ファイル名（redmineフォルダ内）またはパスからプロジェクト・工程別の定時内/定時外レポートを生成し、CSVに出力する。
-    """
-    # 入力ファイルパスの決定
-    if os.path.dirname(input_file) == '':
-        # ファイル名のみ指定された場合は redmine フォルダを先頭に追加
-        input_path = os.path.join('redmine', input_file)
-    else:
-        input_path = input_file
 
-    # データ読み込み
-    df = pd.read_csv(input_path)
+def find_input_csv(redmine_dir='redmine') -> str:
+    """
+    redmine フォルダ内の CSV ファイルを検索し、最新のものを返す。
+    """
+    pattern = os.path.join(redmine_dir, '*.csv')
+    files = glob.glob(pattern)
+    if not files:
+        raise FileNotFoundError(f"{redmine_dir} フォルダ内に CSV ファイルが見つかりませんでした")
+    # 最終更新日時でソートして最新を選択
+    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    return files[0]
 
-    # "工程"列の統合（通常工程と不稼働工程）
+
+def generate_report(input_path: str, output_csv: str):
+    """
+    CSV ファイルパスからプロジェクト・工程別の定時内/定時外レポートを生成し、CSV に出力する。
+    """
+    df = pd.read_csv(input_path, encoding='utf-8-sig')
+    # 工程列の統合
     df['工程'] = df['工程'].fillna(df['工程(不稼働)'])
 
     # 日付ごとの時間集計
@@ -35,20 +42,8 @@ def generate_report(input_file: str, output_csv: str):
             else:
                 normal = row['時間']
                 over = 0.0
-            records.append({
-                'プロジェクト': row['プロジェクト'],
-                '工程': row['工程'],
-                '日付': date,
-                '業務時間': '定時内',
-                '時間': normal
-            })
-            records.append({
-                'プロジェクト': row['プロジェクト'],
-                '工程': row['工程'],
-                '日付': date,
-                '業務時間': '定時外',
-                '時間': over
-            })
+            records.append({'プロジェクト': row['プロジェクト'], '工程': row['工程'], '日付': date, '業務時間': '定時内', '時間': normal})
+            records.append({'プロジェクト': row['プロジェクト'], '工程': row['工程'], '日付': date, '業務時間': '定時外', '時間': over})
 
     df_rec = pd.DataFrame(records)
 
@@ -61,12 +56,10 @@ def generate_report(input_file: str, output_csv: str):
         fill_value=0
     ).reset_index()
 
-    # プロジェクト番号／名称抽出
-    pivot[['プロジェクト番号', 'プロジェクト名']] = \
-        pivot['プロジェクト'].str.extract(r'^(\d+)\s*(.*)$')
-
+    # プロジェクト番号/名称抽出
+    pivot[['プロジェクト番号', 'プロジェクト名']] = pivot['プロジェクト'].str.extract(r'^(\d+)\s*(.*)$')
     # 列順
-    date_cols = sorted([c for c in pivot.columns if isinstance(c, str) and re.match(r"\d{4}-\d{2}-\d{2}", c)])
+    date_cols = sorted([c for c in pivot.columns if re.match(r"\d{4}-\d{2}-\d{2}", str(c))])
     cols = ['プロジェクト番号', 'プロジェクト名', '工程', '業務時間'] + date_cols
     df_final = pivot[cols]
 
@@ -79,18 +72,19 @@ def generate_report(input_file: str, output_csv: str):
         for date in date_cols:
             row[date] = sums.get(date, 0.0)
         summary_rows.append(row)
-
     df_summary = pd.DataFrame(summary_rows, columns=cols)
     df_with_totals = pd.concat([df_final, df_summary], ignore_index=True)
 
-    # CSVに出力
-    df_with_totals.to_csv(output_csv, index=False)
+    df_with_totals.to_csv(output_csv, index=False, encoding='utf-8-sig')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='日報集計レポートジェネレータ')
-    parser.add_argument('input_file', help='入力CSVファイル名（redmineフォルダ内）またはパス')
-    parser.add_argument('output_csv', help='出力CSVファイルパス')
+    parser.add_argument('-o', '--output', default='report_output.csv', help='出力CSVファイル名（省略可）')
     args = parser.parse_args()
 
-    generate_report(args.input_file, args.output_csv)
+    # 入力ファイル自動検出
+    input_csv = find_input_csv('redmine')
+    print(f"入力ファイル: {input_csv}")
+    print(f"レポート出力: {args.output}")
+    generate_report(input_csv, args.output)
